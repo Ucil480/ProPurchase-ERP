@@ -103,7 +103,7 @@
         <div class="flex items-center gap-4">
             <div class="hidden md:flex items-center gap-2 text-xs bg-slate-800 px-3 py-1.5 rounded-full border border-slate-700 text-slate-300">
                 <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-                <span>Database LocalStorage: Ready</span>
+                <span>Database Server MySQL: Connected</span>
             </div>
             <div class="flex items-center gap-3 pl-2 border-l border-slate-700">
                 <div id="hdr-user-avatar" class="w-8 h-8 rounded-full bg-blue-500 flex items-center justify-center font-bold text-white text-xs">
@@ -1633,6 +1633,146 @@
 
     <!-- JAVASCRIPT LOGIC -->
     <script>
+        // =========================================================
+        // SERVER API CONFIGURATION
+        // =========================================================
+        // API Cloudflare Tunnel -> Flask -> MySQL di komputer server kantor.
+        // Jika URL quick tunnel berubah, cukup ubah 1 baris ini.
+        const API_BASE_URL = 'https://lift-subsequent-chester-visit.trycloudflare.com';
+
+        // Browser hanya menyimpan CACHE tampilan + SESSION login.
+        // DATABASE UTAMA TETAP DI MYSQL KOMPUTER SERVER MELALUI API.
+        async function apiRequest(endpoint, options = {}) {
+            const response = await fetch(API_BASE_URL + endpoint, {
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...(options.headers || {})
+                },
+                ...options
+            });
+
+            let result;
+            try {
+                result = await response.json();
+            } catch (e) {
+                result = { success: false, message: 'Server mengembalikan respons yang tidak valid.' };
+            }
+
+            if (!response.ok || result.success === false) {
+                throw new Error(result.message || `HTTP ${response.status}`);
+            }
+
+            return result;
+        }
+
+        async function loadServerData() {
+            const mappings = [
+                ['/api/suppliers', 'SUPPLIERS'],
+                ['/api/items', 'ITEMS'],
+                ['/api/orders', 'ORDERS'],
+                ['/api/receipts', 'RECEIPTS'],
+                ['/api/audit', 'AUDIT_TRAIL']
+            ];
+
+            const errors = [];
+
+            for (const [endpoint, keyName] of mappings) {
+                try {
+                    const result = await apiRequest(endpoint);
+                    if (Array.isArray(result.data)) {
+                        localStorage.setItem(STORAGE_KEYS[keyName], JSON.stringify(result.data));
+                    }
+                } catch (error) {
+                    console.error(`Gagal mengambil ${keyName} dari server:`, error);
+                    errors.push(`${keyName}: ${error.message}`);
+                }
+            }
+
+            return errors;
+        }
+
+        function showServerStatus(online, message = '') {
+            const statusTexts = document.querySelectorAll('header span');
+            const target = Array.from(statusTexts).find(el =>
+                el.innerText && (el.innerText.includes('Database LocalStorage') || el.innerText.includes('Database Server'))
+            );
+            if (target) {
+                target.innerText = online ? 'Database Server MySQL: Connected' : 'Database Server: Offline';
+            }
+            if (!online && message) console.warn(message);
+        }
+
+        function jsonEqual(a, b) {
+            return JSON.stringify(a) === JSON.stringify(b);
+        }
+
+        // Sinkronisasi perubahan dari cache browser ke MySQL server.
+        // Fungsi ini dipanggil oleh semua setData() lama sehingga bagian UI
+        // ERP tidak perlu ditulis ulang satu per satu.
+        async function syncCollectionToServer(key, nextData, previousData) {
+            const endpointMap = {
+                [STORAGE_KEYS.USERS]: '/api/users',
+                [STORAGE_KEYS.SUPPLIERS]: '/api/suppliers',
+                [STORAGE_KEYS.ITEMS]: '/api/items',
+                [STORAGE_KEYS.ORDERS]: '/api/orders',
+                [STORAGE_KEYS.RECEIPTS]: '/api/receipts'
+            };
+
+            // Audit memiliki format endpoint khusus dan hanya INSERT log baru.
+            if (key === STORAGE_KEYS.AUDIT_TRAIL) {
+                const oldIds = new Set((previousData || []).map(x => x.id));
+                const newLogs = (nextData || []).filter(x => x.id && !oldIds.has(x.id));
+                for (const log of newLogs) {
+                    await apiRequest('/api/audit', {
+                        method: 'POST',
+                        body: JSON.stringify({
+                            id: log.id,
+                            username: log.username,
+                            action: log.action,
+                            module: log.module,
+                            docNumber: log.docNumber,
+                            description: log.details,
+                            data: log
+                        })
+                    });
+                }
+                return;
+            }
+
+            const endpoint = endpointMap[key];
+            if (!endpoint) return;
+
+            const oldMap = new Map((previousData || []).filter(x => x && x.id).map(x => [x.id, x]));
+            const newMap = new Map((nextData || []).filter(x => x && x.id).map(x => [x.id, x]));
+
+            // INSERT / UPDATE
+            for (const item of (nextData || [])) {
+                if (!item || !item.id) continue;
+                const oldItem = oldMap.get(item.id);
+
+                if (!oldItem) {
+                    await apiRequest(endpoint, {
+                        method: 'POST',
+                        body: JSON.stringify(item)
+                    });
+                } else if (!jsonEqual(oldItem, item)) {
+                    // Semua endpoint CRUD utama sekarang mendukung PUT.
+                    await apiRequest(`${endpoint}/${encodeURIComponent(item.id)}`, {
+                        method: 'PUT',
+                        body: JSON.stringify(item)
+                    });
+                }
+            }
+
+            // DELETE
+            for (const oldItem of (previousData || [])) {
+                if (!oldItem || !oldItem.id || newMap.has(oldItem.id)) continue;
+                await apiRequest(`${endpoint}/${encodeURIComponent(oldItem.id)}`, {
+                    method: 'DELETE'
+                });
+            }
+        }
+
         // --- INITIALIZATION & LOCALSTORAGE DATABASE DEMO SEED ---
         const STORAGE_KEYS = {
             SUPPLIERS: 'erp_suppliers_v1',
@@ -1764,21 +1904,23 @@
             }
         ];
 
-        function initData() {
-            if (!localStorage.getItem(STORAGE_KEYS.SUPPLIERS)) {
-                localStorage.setItem(STORAGE_KEYS.SUPPLIERS, JSON.stringify(defaultSuppliers));
-            }
-            if (!localStorage.getItem(STORAGE_KEYS.ITEMS)) {
-                localStorage.setItem(STORAGE_KEYS.ITEMS, JSON.stringify(defaultItems));
-            }
-            if (!localStorage.getItem(STORAGE_KEYS.ORDERS)) {
-                localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(defaultOrders));
-            }
-            if (!localStorage.getItem(STORAGE_KEYS.RECEIPTS)) {
-                localStorage.setItem(STORAGE_KEYS.RECEIPTS, JSON.stringify(defaultReceipts));
-            }
-            if (!localStorage.getItem(STORAGE_KEYS.USERS)) {
-                localStorage.setItem(STORAGE_KEYS.USERS, JSON.stringify(defaultUsers));
+        async function initData() {
+            const errors = await loadServerData();
+
+            // LOGIN SENGAJA TIDAK BERGANTUNG PADA DATABASE SERVER.
+            // Tiga akun login selalu dibakukan di HTML.
+            localStorage.setItem(STORAGE_KEYS.USERS, JSON.stringify(defaultUsers));
+
+            if (errors.length === 0) {
+                showServerStatus(true);
+            } else {
+                showServerStatus(false, errors.join(' | '));
+                // Jika API gagal, data cache lama masih boleh ditampilkan.
+                // JANGAN menganggap perubahan baru sudah masuk database server.
+                if (!localStorage.getItem(STORAGE_KEYS.SUPPLIERS)) localStorage.setItem(STORAGE_KEYS.SUPPLIERS, JSON.stringify([]));
+                if (!localStorage.getItem(STORAGE_KEYS.ITEMS)) localStorage.setItem(STORAGE_KEYS.ITEMS, JSON.stringify([]));
+                if (!localStorage.getItem(STORAGE_KEYS.ORDERS)) localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify([]));
+                if (!localStorage.getItem(STORAGE_KEYS.RECEIPTS)) localStorage.setItem(STORAGE_KEYS.RECEIPTS, JSON.stringify([]));
             }
         }
 
@@ -1945,7 +2087,18 @@
         }
 
         function setData(key, data) {
+            const previousData = getData(key);
             localStorage.setItem(key, JSON.stringify(data));
+
+            // UI tetap cepat karena cache diperbarui langsung.
+            // Setelah itu perubahan dikirim ke MySQL melalui Flask API.
+            syncCollectionToServer(key, data, previousData)
+                .then(() => showServerStatus(true))
+                .catch(err => {
+                    console.error(`Gagal sinkronisasi ${key} ke server:`, err);
+                    showServerStatus(false, err.message);
+                    alert('Data tampil di browser, tetapi GAGAL disimpan ke database server.\n\n' + err.message);
+                });
         }
 
         function resetDataDemo() {
@@ -4521,9 +4674,19 @@
         }
 
         // --- INITIAL STARTUP ---
-        window.addEventListener('DOMContentLoaded', () => {
-            initData();
-            switchTab('dashboard');
+        window.addEventListener('DOMContentLoaded', async () => {
+            await initData();
+
+            // Tampilkan login terlebih dahulu. Session tetap berada di browser,
+            // sedangkan master/transaksi diambil dari server.
+            const currentUser = getCurrentUser();
+            if (currentUser) {
+                document.getElementById('loginScreen').classList.add('hidden');
+                updateHeaderAndSidebar();
+                switchTab('dashboard');
+            } else {
+                document.getElementById('loginScreen').classList.remove('hidden');
+            }
         });
     </script>
 </body>
