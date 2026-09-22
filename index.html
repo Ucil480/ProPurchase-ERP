@@ -3783,9 +3783,17 @@
         }
 
         // --- MASTER ITEM CRUD ---
-        function renderItemTable() {
-            const items = getData(STORAGE_KEYS.ITEMS);
-            const tbody = document.getElementById('item-table-body');
+function renderItemTable() {
+    const items = getData(STORAGE_KEYS.ITEMS);
+
+    // Urutkan berdasarkan Kode Item dari yang terkecil
+    items.sort((a, b) => {
+        const nomorA = parseInt(a.code.replace(/\D/g, '')) || 0;
+        const nomorB = parseInt(b.code.replace(/\D/g, '')) || 0;
+        return nomorA - nomorB;
+    });
+
+    const tbody = document.getElementById('item-table-body');
 
             if (items.length === 0) {
                 tbody.innerHTML = `<tr><td colspan="6" class="text-center p-6 text-slate-400">Tidak ada master item terdaftar.</td></tr>`;
