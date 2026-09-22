@@ -2246,10 +2246,18 @@
                 }
             });
 
-            // Top items
-            const items = getData(STORAGE_KEYS.ITEMS);
-            const topContainer = document.getElementById('dash-top-items');
-            topContainer.innerHTML = items.slice(0, 4).map(itm => `
+// Top items - urut berdasarkan Kode Item terkecil
+const items = getData(STORAGE_KEYS.ITEMS);
+
+const sortedItems = [...items].sort((a, b) => {
+    const nomorA = parseInt(a.code.replace(/\D/g, '')) || 0;
+    const nomorB = parseInt(b.code.replace(/\D/g, '')) || 0;
+    return nomorA - nomorB;
+});
+
+const topContainer = document.getElementById('dash-top-items');
+
+topContainer.innerHTML = sortedItems.slice(0, 4).map(itm => `
                 <div class="flex items-center justify-between p-2.5 rounded-lg bg-slate-50 border border-slate-100 text-xs">
                     <div>
                         <div class="font-bold text-slate-800">${itm.name}</div>
